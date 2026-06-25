@@ -16,12 +16,12 @@ export default function AdminDashboard() {
   }, []);
 
   const fetchStats = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/admin/stats", authHeader);
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/admin/stats`, authHeader);
     setStats(res.data);
   };
 
   const fetchApplications = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/all_applications", authHeader);
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/all_applications`, authHeader);
     setApplications(res.data);
   };
 

@@ -17,18 +17,18 @@ export default function StudentDashboard() {
   }, []);
 
   const fetchJobs = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/jobs");
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/jobs`);
     setJobs(res.data);
   };
 
   const fetchMyApplications = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/my_applications", authHeader);
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/my_applications`, authHeader);
     setMyApplications(res.data);
   };
 
   const applyJob = async (job_id) => {
     try {
-      await axios.post("${import.meta.env.VITE_API_URL}/apply", { job_id }, authHeader);
+      await axios.post(`${import.meta.env.VITE_API_URL}/apply`, { job_id }, authHeader);
       alert("Applied successfully!");
       fetchMyApplications();
     } catch (err) {

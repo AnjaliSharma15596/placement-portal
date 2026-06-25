@@ -21,19 +21,19 @@ export default function HRDashboard() {
   }, []);
 
   const fetchJobs = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/jobs");
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/jobs`);
     setJobs(res.data);
   };
 
   const fetchApplications = async () => {
-    const res = await axios.get("${import.meta.env.VITE_API_URL}/all_applications", authHeader);
+    const res = await axios.get(`${import.meta.env.VITE_API_URL}/all_applications`, authHeader);
     setApplications(res.data);
   };
 
   const handlePost = async (e) => {
     e.preventDefault();
     try {
-      await axios.post("${import.meta.env.VITE_API_URL}/add_job", form, authHeader);
+      await axios.post(`${import.meta.env.VITE_API_URL}/add_job`, form, authHeader);
       alert("Job posted!");
       setForm({ title: "", company: "", description: "", package: "", eligibility: "", deadline: "" });
       fetchJobs();
