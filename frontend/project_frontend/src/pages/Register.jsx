@@ -29,7 +29,7 @@ export default function Register() {
   const roles = [
     { value: "student", label: "🎓 Student", desc: "Jobs browse aur apply karo" },
     { value: "hr", label: "🏢 HR", desc: "Jobs post aur applications manage karo" },
-    { value: "admin", label: "🛡️ Admin", desc: "Complete portal manage karo" },
+   
   ];
 
   return (

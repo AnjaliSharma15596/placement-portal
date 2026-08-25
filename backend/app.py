@@ -38,6 +38,9 @@ def register():
     if not all([name, email, password, role]):
         return jsonify({"error": "All fields required"}), 400
 
+    if role not in ["student", "hr"]:
+        return jsonify({"error": "Invalid role. Admin accounts cannot self-register"}), 403
+
     hashed_password = generate_password_hash(password)
 
     try:
@@ -118,15 +121,26 @@ def add_job():
 @jwt_required()
 def delete_job(id):
     current_user = json.loads(get_jwt_identity())
-    if current_user["role"] not in ["hr", "admin"]:
-        return jsonify({"error": "Unauthorized"}), 403
 
     conn = get_db()
+    job = conn.execute("SELECT * FROM jobs WHERE id=?", (id,)).fetchone()
+
+    if not job:
+        conn.close()
+        return jsonify({"error": "Job not found"}), 404
+
+    if current_user["role"] == "admin":
+        pass
+    elif current_user["role"] == "hr" and job["posted_by"] == current_user["id"]:
+        pass
+    else:
+        conn.close()
+        return jsonify({"error": "Unauthorized"}), 403
+
     conn.execute("DELETE FROM jobs WHERE id=?", (id,))
     conn.commit()
     conn.close()
     return jsonify({"message": "Job deleted"})
-
 
 # =========================
 # APPLICATION ROUTES
@@ -167,13 +181,31 @@ def my_applications():
 
 @app.route("/update_status/<int:app_id>", methods=["POST"])
 @jwt_required()
+
 def update_status(app_id):
     current_user = json.loads(get_jwt_identity())
-    if current_user["role"] not in ["hr", "admin"]:
+
+    conn = get_db()
+    app_row = conn.execute("""
+        SELECT applications.id, jobs.posted_by
+        FROM applications
+        JOIN jobs ON applications.job_id = jobs.id
+        WHERE applications.id = ?
+    """, (app_id,)).fetchone()
+
+    if not app_row:
+        conn.close()
+        return jsonify({"error": "Application not found"}), 404
+
+    if current_user["role"] == "admin":
+        pass
+    elif current_user["role"] == "hr" and app_row["posted_by"] == current_user["id"]:
+        pass
+    else:
+        conn.close()
         return jsonify({"error": "Unauthorized"}), 403
 
     data = request.json
-    conn = get_db()
     conn.execute(
         "UPDATE applications SET status=? WHERE id=?",
         (data["status"], app_id)
