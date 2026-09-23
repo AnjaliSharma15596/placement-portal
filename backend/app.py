@@ -2,8 +2,9 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import init_db
-import sqlite3
+from models import init_db, get_connection
+import psycopg2
+import psycopg2.extras
 import json
 
 app = Flask(__name__)
@@ -18,8 +19,7 @@ init_db()
 # DATABASE CONNECTION
 # =========================
 def get_db():
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
+    conn = get_connection()
     return conn
 
 
@@ -33,7 +33,7 @@ def register():
     name = data.get("name")
     email = data.get("email")
     password = data.get("password")
-    role = data.get("role")  # student / hr / admin
+    role = data.get("role")
 
     if not all([name, email, password, role]):
         return jsonify({"error": "All fields required"}), 400
@@ -42,18 +42,23 @@ def register():
         return jsonify({"error": "Invalid role. Admin accounts cannot self-register"}), 403
 
     hashed_password = generate_password_hash(password)
+    is_approved = 0 if role == "hr" else 1
 
+    conn = get_db()
+    cur = conn.cursor()
     try:
-        conn = get_db()
-        conn.execute(
-            "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
-            (name, email, hashed_password, role)
+        cur.execute(
+            "INSERT INTO users (name, email, password, role, is_approved) VALUES (%s, %s, %s, %s, %s)",
+            (name, email, hashed_password, role, is_approved)
         )
         conn.commit()
-        conn.close()
         return jsonify({"message": "User registered successfully"}), 201
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         return jsonify({"error": "Email already exists"}), 409
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/login", methods=["POST"])
@@ -63,15 +68,15 @@ def login():
     password = data.get("password")
 
     conn = get_db()
-    user = conn.execute(
-        "SELECT * FROM users WHERE email = ?", (email,)
-    ).fetchone()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE email = %s", (email,))
+    user = cur.fetchone()
+    cur.close()
     conn.close()
 
     if not user or not check_password_hash(user["password"], password):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    # JWT token mein role aur name bhi store karenge
     identity = json.dumps({
         "id": user["id"],
         "name": user["name"],
@@ -93,7 +98,10 @@ def login():
 @app.route("/jobs", methods=["GET"])
 def get_jobs():
     conn = get_db()
-    jobs = conn.execute("SELECT * FROM jobs").fetchall()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM jobs")
+    jobs = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(job) for job in jobs])
 
@@ -105,14 +113,23 @@ def add_job():
     if current_user["role"] != "hr":
         return jsonify({"error": "Only HR can post jobs"}), 403
 
-    data = request.json
     conn = get_db()
-    conn.execute(
-        "INSERT INTO jobs (title, company, description, package, eligibility, deadline, posted_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT is_approved FROM users WHERE id=%s", (current_user["id"],))
+    user = cur.fetchone()
+    if not user["is_approved"]:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Your HR account is pending admin approval"}), 403
+
+    data = request.json
+    cur.execute(
+        "INSERT INTO jobs (title, company, description, package, eligibility, deadline, posted_by) VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (data["title"], data["company"], data["description"],
          data.get("package"), data.get("eligibility"), data.get("deadline"), current_user["id"])
     )
     conn.commit()
+    cur.close()
     conn.close()
     return jsonify({"message": "Job added successfully"}), 201
 
@@ -123,9 +140,12 @@ def delete_job(id):
     current_user = json.loads(get_jwt_identity())
 
     conn = get_db()
-    job = conn.execute("SELECT * FROM jobs WHERE id=?", (id,)).fetchone()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM jobs WHERE id=%s", (id,))
+    job = cur.fetchone()
 
     if not job:
+        cur.close()
         conn.close()
         return jsonify({"error": "Job not found"}), 404
 
@@ -134,11 +154,13 @@ def delete_job(id):
     elif current_user["role"] == "hr" and job["posted_by"] == current_user["id"]:
         pass
     else:
+        cur.close()
         conn.close()
         return jsonify({"error": "Unauthorized"}), 403
 
-    conn.execute("DELETE FROM jobs WHERE id=?", (id,))
+    cur.execute("DELETE FROM jobs WHERE id=%s", (id,))
     conn.commit()
+    cur.close()
     conn.close()
     return jsonify({"message": "Job deleted"})
 
@@ -155,13 +177,20 @@ def apply_job():
 
     data = request.json
     conn = get_db()
-    conn.execute(
-        "INSERT INTO applications (user_id, job_id, status) VALUES (?, ?, ?)",
-        (current_user["id"], data["job_id"], "Applied")
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"message": "Applied successfully"}), 201
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO applications (user_id, job_id, status) VALUES (%s, %s, %s)",
+            (current_user["id"], data["job_id"], "Applied")
+        )
+        conn.commit()
+        return jsonify({"message": "Applied successfully"}), 201
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return jsonify({"error": "You have already applied to this job"}), 409
+    finally:
+        cur.close()
+        conn.close()
 
 
 @app.route("/my_applications", methods=["GET"])
@@ -169,31 +198,36 @@ def apply_job():
 def my_applications():
     current_user = json.loads(get_jwt_identity())
     conn = get_db()
-    apps = conn.execute("""
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
         SELECT applications.id, jobs.title, jobs.company, applications.status
         FROM applications
         JOIN jobs ON applications.job_id = jobs.id
-        WHERE applications.user_id = ?
-    """, (current_user["id"],)).fetchall()
+        WHERE applications.user_id = %s
+    """, (current_user["id"],))
+    apps = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(a) for a in apps])
 
 
 @app.route("/update_status/<int:app_id>", methods=["POST"])
 @jwt_required()
-
 def update_status(app_id):
     current_user = json.loads(get_jwt_identity())
 
     conn = get_db()
-    app_row = conn.execute("""
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
         SELECT applications.id, jobs.posted_by
         FROM applications
         JOIN jobs ON applications.job_id = jobs.id
-        WHERE applications.id = ?
-    """, (app_id,)).fetchone()
+        WHERE applications.id = %s
+    """, (app_id,))
+    app_row = cur.fetchone()
 
     if not app_row:
+        cur.close()
         conn.close()
         return jsonify({"error": "Application not found"}), 404
 
@@ -202,15 +236,17 @@ def update_status(app_id):
     elif current_user["role"] == "hr" and app_row["posted_by"] == current_user["id"]:
         pass
     else:
+        cur.close()
         conn.close()
         return jsonify({"error": "Unauthorized"}), 403
 
     data = request.json
-    conn.execute(
-        "UPDATE applications SET status=? WHERE id=?",
+    cur.execute(
+        "UPDATE applications SET status=%s WHERE id=%s",
         (data["status"], app_id)
     )
     conn.commit()
+    cur.close()
     conn.close()
     return jsonify({"message": "Status updated"})
 
@@ -226,13 +262,16 @@ def all_applications():
         return jsonify({"error": "Unauthorized"}), 403
 
     conn = get_db()
-    apps = conn.execute("""
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
         SELECT applications.id, users.name as student_name, 
                jobs.title, jobs.company, applications.status
         FROM applications
         JOIN jobs ON applications.job_id = jobs.id
         JOIN users ON applications.user_id = users.id
-    """).fetchall()
+    """)
+    apps = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(a) for a in apps])
 
@@ -248,18 +287,16 @@ def admin_stats():
         return jsonify({"error": "Unauthorized"}), 403
 
     conn = get_db()
-    total_students = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE role='student'"
-    ).fetchone()[0]
-    total_companies = conn.execute(
-        "SELECT COUNT(DISTINCT company) FROM jobs"
-    ).fetchone()[0]
-    total_applications = conn.execute(
-        "SELECT COUNT(*) FROM applications"
-    ).fetchone()[0]
-    total_selected = conn.execute(
-        "SELECT COUNT(*) FROM applications WHERE status='Selected'"
-    ).fetchone()[0]
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users WHERE role='student'")
+    total_students = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(DISTINCT company) FROM jobs")
+    total_companies = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM applications")
+    total_applications = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM applications WHERE status='Selected'")
+    total_selected = cur.fetchone()[0]
+    cur.close()
     conn.close()
 
     return jsonify({
@@ -270,5 +307,35 @@ def admin_stats():
     })
 
 
+@app.route("/admin/pending_hr", methods=["GET"])
+@jwt_required()
+def pending_hr():
+    current_user = json.loads(get_jwt_identity())
+    if current_user["role"] != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, name, email FROM users WHERE role='hr' AND is_approved=0")
+    pending = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify([dict(p) for p in pending])
+
+
+@app.route("/admin/approve_hr/<int:user_id>", methods=["POST"])
+@jwt_required()
+def approve_hr(user_id):
+    current_user = json.loads(get_jwt_identity())
+    if current_user["role"] != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET is_approved=1 WHERE id=%s", (user_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "HR account approved"})
+
+
 if __name__ == "__main__":
-       app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000)
